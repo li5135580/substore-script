@@ -75,13 +75,19 @@ function detectFeature(proxy) {
 }
 
 /**
- * 核心逻辑：匹配地区
+ * 核心逻辑：匹配地区 (已修复纯 Emoji 漏网问题)
  */
 function getRegionInfo(name, server) {
   const allText = (name + server).toLowerCase();
-  let index = -1;
+  
+  // 0. Emoji 直通车：如果原节点名自带国旗，直接锁定地区！
+  const flagIndex = FG.findIndex(emoji => name.includes(emoji));
+  if (flagIndex !== -1) {
+    return { flag: FG[flagIndex], region: ZH[flagIndex] };
+  }
 
-  // 1. 优先正则匹配 (1.js 风格)
+  let index = -1;
+  // 1. 优先正则匹配 (文本检测)
   if (/hong.?kong|hk|香港|港/.test(allText)) index = 0;
   else if (/macao|mo|澳门/.test(allText)) index = 1;
   else if (/taiwan|tw|台湾/.test(allText)) index = 2;
@@ -91,19 +97,13 @@ function getRegionInfo(name, server) {
   else if (/united.?states|us|美国/.test(allText)) index = 6;
   else if (/united.?kingdom|uk|英国/.test(allText)) index = 7;
 
-  // 2. 如果没匹配到，尝试搜索 EN 词表
+  // 2. EN 词表兜底
   if (index === -1) {
-    index = EN.findIndex(code => {
-      const re = new RegExp(`(?:^|[^A-Za-z])${code}(?:[^A-Za-z]|$)`, "i");
-      return re.test(allText);
-    });
+    index = EN.findIndex(code => new RegExp(`(?:^|[^A-Za-z])${code}(?:[^A-Za-z]|$)`, "i").test(allText));
   }
 
   if (index !== -1) {
-    return {
-      flag: FG[index] || "",
-      region: ZH[index],
-    };
+    return { flag: FG[index] || "", region: ZH[index] };
   }
   return { flag: "🏳️‍🌈", region: "其他" };
 }
