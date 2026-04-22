@@ -1,15 +1,15 @@
 /**
- * Sub-Store 智能识别脚本 (本地优先 + IP API 兜底)
- * 逻辑：本地识别 -> 若失败则调用 ipwho.is -> 自动格式化
+ * Sub-Store 智能识别脚本 (Final Repair)
+ * 逻辑：本地识别 -> IP API 兜底 -> 严格三段 IP 格式
  */
 
 const inArg = $arguments;
 
 // --- 参数控制 ---
-const addflag = !/^(false|0|off|no)$/i.test(inArg.flag); // 默认显示国旗
-const useApi  = !/^(false|0|off|no)$/i.test(inArg.api);  // 是否开启 API 查询 (默认开)
+const addflag = !/^(false|0|off|no)$/i.test(inArg.flag); 
+const useApi  = !/^(false|0|off|no)$/i.test(inArg.api);  
 
-// --- 本地核心数据表 (增加 IP 段识别，确保 154.222 必中) ---
+// --- 本地数据表 ---
 const Regions = [
     { n: "香港", f: "🇭🇰", re: /hong.?kong|hk|香港|港|hkg|154\.222|103\.152/i },
     { n: "澳门", f: "🇲🇴", re: /macao|mo|澳门/i },
@@ -24,13 +24,12 @@ const Regions = [
 const FlagMap = { "HK": "🇭🇰", "MO": "🇲🇴", "TW": "🇹🇼", "JP": "🇯🇵", "KR": "🇰🇷", "SG": "🇸🇬", "US": "🇺🇸", "GB": "🇬🇧", "VN": "🇻🇳", "TH": "🇹🇭" };
 
 /**
- * 1. 异步 API 查询函数 (ipwho.is)
+ * 1. 异步 API 查询 (ipwho.is)
  */
 async function fetchIpInfo(ip) {
     if (!ip || !/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return null;
-    const url = `https://ipwho.is/${ip}`;
     return new Promise((resolve) => {
-        $httpClient.get(url, (error, response, data) => {
+        $httpClient.get(`https://ipwho.is/${ip}`, (error, response, data) => {
             if (!error && data) {
                 try {
                     const res = JSON.parse(data);
@@ -49,38 +48,33 @@ async function fetchIpInfo(ip) {
 }
 
 /**
- * 2. 本地地区识别 (针对 🇭🇰%20 乱码名节点)
+ * 2. 本地识别 (修复 RegExp.$1 冲突问题)
  */
 function getRegionLocal(proxy) {
     let name = proxy.name || "";
     let server = proxy.server || "";
-    
-    // 暴力解码
     try {
         name = decodeURIComponent(name);
         if (name.includes('%')) name = decodeURIComponent(name);
     } catch (e) {}
+    name = name.replace(/[\u200b-\u200d\ufeff\s]/g, "");
     
-    const allText = (name + server).toLowerCase();
-
-    // 优先匹配 Unicode 旗帜
-    const flagRegex = /([\uD83C][\uDDE6-\uDDFF][\uD83C][\uDDE6-\uDDFF])/;
-    const match = name.match(flagRegex);
-    if (match) {
-        const found = Regions.find(r => r.f === match[1]);
+    // 优先提取 Emoji
+    const flagMatch = name.match(/([\uD83C][\uDDE6-\uDDFF][\uD83C][\uDDE6-\uDDFF])/);
+    if (flagMatch) {
+        const found = Regions.find(r => r.f === flagMatch[1]);
         if (found) return { flag: found.f, region: found.n };
     }
 
-    // 关键字与 IP 段扫描 (这里 154.222 就会命中香港)
+    const allText = (name + server).toLowerCase();
     for (const r of Regions) {
         if (r.re.test(allText)) return { flag: r.f, region: r.n };
     }
-
-    return null; // 本地识别失败
+    return null;
 }
 
 /**
- * 3. 协议与 IP 格式化
+ * 3. 协议识别
  */
 function detectFeature(proxy) {
     const f = (k) => String(proxy[k] || "").toLowerCase();
@@ -92,39 +86,45 @@ function detectFeature(proxy) {
     return type.toUpperCase() || "NODE";
 }
 
+/**
+ * 4. IP 格式化 (修复 undefined 问题)
+ */
 function formatIP(host) {
-    if (/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/.test(host)) return RegExp.$1;
-    return host.split('.')[0];
+    const ipMatch = String(host || "").match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/);
+    if (ipMatch && ipMatch[1]) {
+        return ipMatch[1];
+    }
+    return String(host || "Unknown").split('.')[0];
 }
 
 /**
- * 4. 主执行函数 (异步)
+ * 5. 主执行逻辑
  */
 async function operator(proxies) {
     const counters = {};
-    
-    // 使用 Promise.all 提高效率 (但受限于 API 频率限制)
+    const clearRe = /(套餐|到期|有效|剩余|已用|过期|官方|网址|订阅|流量)/i;
+
     const processed = await Promise.all(proxies.map(async (p) => {
-        // A. 尝试本地识别
+        if (clearRe.test(p.name)) return null;
+
+        // 获取地域
         let info = getRegionLocal(p);
-        
-        // B. 本地识别失败且开启 API，则在线查询
         if (!info && useApi) {
-            const apiInfo = await fetchIpInfo(p.server);
-            if (apiInfo) info = apiInfo;
+            info = await fetchIpInfo(p.server);
         }
-        
-        // C. 仍然识别失败的兜底
         if (!info) info = { flag: "🏳️‍🌈", region: "其他" };
 
+        // 获取格式化后的 IP
         const ip = formatIP(p.server);
         const proto = detectFeature(p);
+
         const base = `${addflag ? info.flag + ' ' : ''}${info.region} | ${ip} | ${proto}`;
         
         counters[base] = (counters[base] || 0) + 1;
-        p.name = `${base} ${String(counters[base]).padStart(2, "0")}`;
+        const num = String(counters[base]).padStart(2, "0");
+        p.name = `${base} ${num}`;
         return p;
     }));
 
-    return processed;
+    return processed.filter(Boolean);
 }
