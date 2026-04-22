@@ -157,26 +157,4 @@ function operator(proxies) {
   }
 
   return processed;
-}    else if (sec === "reality") proto = "Reality";
-    else if (type === "hysteria2" || type === "hy2") proto = "Hy2";
-    else if (type === "tuic") proto = "TUIC";
-
-    // === 5. 组合最终名称 ===
-    const base = `${addflag ? info.flag + ' ' : ''}${info.region} | ${ipDisplay} | ${proto}`;
-    
-    counters[base] = (counters[base] || 0) + 1;
-    const num = String(counters[base]).padStart(2, "0");
-    
-    p.name = `${base} ${num}`;
-    p._base = base;
-    return p;
-  }).map((p, i, all) => {
-    // 单节点隐藏编号逻辑
-    if (numone) {
-      const isOnlyOne = all.filter(x => x._base === p._base).length === 1;
-      if (isOnlyOne) p.name = p.name.replace(/\s\d+$/, "");
-    }
-    delete p._base;
-    return p;
-  });
 }
