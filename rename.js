@@ -1,130 +1,143 @@
 /**
- * Sub-Store 智能识别脚本 (Final Repair)
- * 逻辑：本地识别 -> IP API 兜底 -> 严格三段 IP 格式
+ * Sub-Store 智能识别脚本 (异步 API + 稳健 IP 提取)
+ * 修复说明：彻底解决 IP 段显示为 undefined 的问题
  */
 
 const inArg = $arguments;
 
 // --- 参数控制 ---
-const addflag = !/^(false|0|off|no)$/i.test(inArg.flag); 
-const useApi  = !/^(false|0|off|no)$/i.test(inArg.api);  
+const addflag = !/^(false|0|off|no)$/i.test(inArg.flag); // 默认显示国旗
+const useApi  = !/^(false|0|off|no)$/i.test(inArg.api);  // 是否开启 API (默认开)
 
-// --- 本地数据表 ---
-const Regions = [
-    { n: "香港", f: "🇭🇰", re: /hong.?kong|hk|香港|港|hkg|154\.222|103\.152/i },
-    { n: "澳门", f: "🇲🇴", re: /macao|mo|澳门/i },
-    { n: "台湾", f: "🇹🇼", re: /taiwan|tw|台湾|台北|tpe/i },
-    { n: "日本", f: "🇯🇵", re: /japan|jp|日本|东京|大阪|tokyo|nrt/i },
-    { n: "韩国", f: "🇰🇷", re: /korea|kr|韩国|首尔|seoul/i },
-    { n: "新加坡", f: "🇸🇬", re: /singapore|sg|新加坡|狮城|sin/i },
-    { n: "美国", f: "🇺🇸", re: /united.?states|us|美国|america|lax|sfo/i },
-    { n: "英国", f: "🇬🇧", re: /united.?kingdom|uk|英国|london/i }
-];
-
-const FlagMap = { "HK": "🇭🇰", "MO": "🇲🇴", "TW": "🇹🇼", "JP": "🇯🇵", "KR": "🇰🇷", "SG": "🇸🇬", "US": "🇺🇸", "GB": "🇬🇧", "VN": "🇻🇳", "TH": "🇹🇭" };
+// --- 国家名中英文映射表 (针对 API 返回结果) ---
+const CountryMap = {
+  "Hong Kong": { n: "香港", f: "🇭🇰" },
+  "Taiwan": { n: "台湾", f: "🇹🇼" },
+  "Macao": { n: "澳门", f: "🇲🇴" },
+  "Japan": { n: "日本", f: "🇯🇵" },
+  "Singapore": { n: "新加坡", f: "🇸🇬" },
+  "United States": { n: "美国", f: "🇺🇸" },
+  "South Korea": { n: "韩国", f: "🇰🇷" },
+  "United Kingdom": { n: "英国", f: "🇬🇧" },
+  "Vietnam": { n: "越南", f: "🇻🇳" }
+};
 
 /**
  * 1. 异步 API 查询 (ipwho.is)
  */
 async function fetchIpInfo(ip) {
-    if (!ip || !/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return null;
-    return new Promise((resolve) => {
-        $httpClient.get(`https://ipwho.is/${ip}`, (error, response, data) => {
-            if (!error && data) {
-                try {
-                    const res = JSON.parse(data);
-                    if (res.success) {
-                        resolve({
-                            region: res.country || "其他",
-                            flag: FlagMap[res.country_code] || "🏳️‍🌈"
-                        });
-                        return;
-                    }
-                } catch (e) {}
-            }
-            resolve(null);
-        });
+  if (!ip || !/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return null;
+  return new Promise((resolve) => {
+    $httpClient.get(`https://ipwho.is/${ip}`, (error, response, data) => {
+      if (!error && data) {
+        try {
+          const res = JSON.parse(data);
+          if (res.success) {
+            const country = res.country;
+            const mapped = CountryMap[country];
+            resolve({
+              region: mapped ? mapped.n : country,
+              flag: mapped ? mapped.f : (res.flag ? res.flag.emoji : "🏳️‍🌈")
+            });
+            return;
+          }
+        } catch (e) {}
+      }
+      resolve(null);
     });
+  });
 }
 
 /**
- * 2. 本地识别 (修复 RegExp.$1 冲突问题)
+ * 2. 稳健的 IP 段提取 (核心修复：解决 undefined 问题)
+ */
+function getSafeIP(host) {
+  const sHost = String(host || "");
+  // 方法 A: 正则匹配 (不使用 RegExp.$1)
+  const match = sHost.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  // 方法 B: 暴力切割兜底
+  if (sHost.includes('.')) {
+    const parts = sHost.split('.');
+    if (parts.length >= 3 && /^\d+$/.test(parts[0])) {
+      return `${parts[0]}.${parts[1]}.${parts[2]}`;
+    }
+    return parts[0]; // 如果是域名，返回第一段
+  }
+  return "Unknown";
+}
+
+/**
+ * 3. 本地识别 (针对 Emoji 专项优化)
  */
 function getRegionLocal(proxy) {
-    let name = proxy.name || "";
-    let server = proxy.server || "";
-    try {
-        name = decodeURIComponent(name);
-        if (name.includes('%')) name = decodeURIComponent(name);
-    } catch (e) {}
-    name = name.replace(/[\u200b-\u200d\ufeff\s]/g, "");
-    
-    // 优先提取 Emoji
-    const flagMatch = name.match(/([\uD83C][\uDDE6-\uDDFF][\uD83C][\uDDE6-\uDDFF])/);
-    if (flagMatch) {
-        const found = Regions.find(r => r.f === flagMatch[1]);
-        if (found) return { flag: found.f, region: found.n };
-    }
-
-    const allText = (name + server).toLowerCase();
-    for (const r of Regions) {
-        if (r.re.test(allText)) return { flag: r.f, region: r.n };
-    }
-    return null;
+  let name = proxy.name || "";
+  try {
+    name = decodeURIComponent(name);
+    if (name.includes('%')) name = decodeURIComponent(name);
+  } catch (e) {}
+  
+  // 识别 Emoji
+  const flagMatch = name.match(/([\uD83C][\uDDE6-\uDDFF][\uD83C][\uDDE6-\uDDFF])/);
+  if (flagMatch) {
+    const f = flagMatch[1];
+    if (f === "🇭🇰") return { flag: "🇭🇰", region: "香港" };
+    if (f === "🇯🇵") return { flag: "🇯🇵", region: "日本" };
+    if (f === "🇸🇬") return { flag: "🇸🇬", region: "新加坡" };
+    if (f === "🇺🇸") return { flag: "🇺🇸", region: "美国" };
+    if (f === "🇹🇼") return { flag: "🇹🇼", region: "台湾" };
+  }
+  
+  // 识别关键字
+  const all = (name + (proxy.server || "")).toLowerCase();
+  if (all.includes("hk") || all.includes("香港") || all.includes("154.222")) return { flag: "🇭🇰", region: "香港" };
+  if (all.includes("sg") || all.includes("新加坡")) return { flag: "🇸🇬", region: "新加坡" };
+  
+  return null;
 }
 
 /**
- * 3. 协议识别
+ * 4. 协议特征识别
  */
 function detectFeature(proxy) {
-    const f = (k) => String(proxy[k] || "").toLowerCase();
-    const type = f("type"), flow = f("flow"), sec = f("security") || f("tls");
-    if (flow.includes("vision")) return "Vision";
-    if (sec === "reality") return "Reality";
-    if (type === "tuic") return "TUIC";
-    if (type === "hysteria2" || type === "hy2") return "Hysteria2";
-    return type.toUpperCase() || "NODE";
-}
-
-/**
- * 4. IP 格式化 (修复 undefined 问题)
- */
-function formatIP(host) {
-    const ipMatch = String(host || "").match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/);
-    if (ipMatch && ipMatch[1]) {
-        return ipMatch[1];
-    }
-    return String(host || "Unknown").split('.')[0];
+  const f = (k) => String(proxy[k] || "").toLowerCase();
+  const type = f("type"), flow = f("flow"), sec = f("security") || f("tls");
+  if (flow.includes("vision")) return "Vision";
+  if (sec === "reality") return "Reality";
+  if (type === "tuic") return "TUIC";
+  if (type === "hysteria2") return "Hy2";
+  return type.toUpperCase() || "NODE";
 }
 
 /**
  * 5. 主执行逻辑
  */
 async function operator(proxies) {
-    const counters = {};
-    const clearRe = /(套餐|到期|有效|剩余|已用|过期|官方|网址|订阅|流量)/i;
+  const counters = {};
 
-    const processed = await Promise.all(proxies.map(async (p) => {
-        if (clearRe.test(p.name)) return null;
+  const processed = await Promise.all(proxies.map(async (p) => {
+    // 1. 获取地域
+    let info = getRegionLocal(p);
+    if (!info && useApi) {
+      info = await fetchIpInfo(p.server);
+    }
+    if (!info) info = { flag: "🏳️‍🌈", region: "其他" };
 
-        // 获取地域
-        let info = getRegionLocal(p);
-        if (!info && useApi) {
-            info = await fetchIpInfo(p.server);
-        }
-        if (!info) info = { flag: "🏳️‍🌈", region: "其他" };
+    // 2. 获取 IP 段 (修复点)
+    const ip = getSafeIP(p.server);
 
-        // 获取格式化后的 IP
-        const ip = formatIP(p.server);
-        const proto = detectFeature(p);
+    // 3. 识别协议
+    const proto = detectFeature(p);
 
-        const base = `${addflag ? info.flag + ' ' : ''}${info.region} | ${ip} | ${proto}`;
-        
-        counters[base] = (counters[base] || 0) + 1;
-        const num = String(counters[base]).padStart(2, "0");
-        p.name = `${base} ${num}`;
-        return p;
-    }));
+    // 4. 组装
+    const base = `${addflag ? info.flag + ' ' : ''}${info.region} | ${ip} | ${proto}`;
+    
+    counters[base] = (counters[base] || 0) + 1;
+    p.name = `${base} ${String(counters[base]).padStart(2, "0")}`;
+    return p;
+  }));
 
-    return processed.filter(Boolean);
+  return processed;
 }
