@@ -1,133 +1,140 @@
 /**
- * Sub-Store 融合重命名脚本 (Final Production Version)
- * 特性：
- * 1. 专项修复：解决 🇭🇰%20 这种含有 URL 编码和零宽字符的 Emoji 识别失败问题。
- * 2. 协议增强：完整继承Vision/Reality/gRPC 识别逻辑。
- * 3. 智能截取：IP 地址严格保留前三段 (如 1.2.3)。
+ * Sub-Store 终极重命名脚本 (彻底修复 Emoji 识别问题)
+ * 逻辑：[国旗] [地区] | [IP前三段/入口] | [协议类型] [编号]
  */
 
 const inArg = $arguments;
 
-// --- 参数解析 (继承自 2.js) ---
-function boolArg(v, d = false) {
-  if (v === undefined || v === null || String(v).trim() === "") return d;
-  return /^(true|1|on|yes)$/i.test(String(v).trim());
-}
+// --- 参数控制 ---
+const addflag = /^(false|0|off|no)$/i.test(inArg.flag) ? false : true;
+const clear   = /^(false|0|off|no)$/i.test(inArg.clear) ? false : true;
+const numone  = /^(true|1|on|yes)$/i.test(inArg.one) ? true : false;
 
-const addflag = boolArg(inArg.flag, true);   // 是否显示国旗
-const clear   = boolArg(inArg.clear, true);  // 是否清理信息节点
-const numone  = boolArg(inArg.one, false);   // 单节点隐藏编号
-
-// --- 核心数据表 ---
-const FG = ['🇭🇰','🇲🇴','🇹🇼','🇯🇵','🇰🇷','🇸🇬','🇺🇸','🇬🇧','🇫🇷','🇩🇪','🇦🇺','🇦🇪','🇧🇷','🇨🇦','🇨🇭','🇮🇳','🇮🇩','🇲🇾','🇳🇱','🇵Ｈ','🇷🇺','🇹🇭','🇹🇷','🇻🇳'];
-const ZH = ['香港','澳门','台湾','日本','韩国','新加坡','美国','英国','法国','德国','澳大利亚','阿联酋','巴西','加拿大','瑞士','印度','印尼','马来西亚','荷兰','菲律宾','俄罗斯','泰国','土耳其','越南'];
-const EN = ['HK','MO','TW','JP','KR','SG','US','GB','FR','DE','AU','AE','BR','CA','CH','IN','ID','MY','NL','PH','RU','TH','TR','VN'];
-
-// 冗余节点清理正则
-const nameclear = /(套餐|到期|有效|剩余|版本|已用|过期|失联|测试|官方|网址|订阅|流量|机场)/i;
+// --- 标准映射表 ---
+const FG = ['🇭🇰','🇲🇴','🇹🇼','🇯🇵','🇰🇷','🇸🇬','🇺🇸','🇬🇧','🇫🇷','🇩🇪','🇦🇺','🇦🇪','🇦🇲','🇦🇹','🇧🇷','🇨🇦','🇨🇭','🇮🇳','🇮🇩','🇮🇹','🇲🇾','🇳🇱','🇵Ｈ','🇷🇺','🇸🇦','🇪🇸','🇹🇭','🇹🇷','🇻🇳'];
+const ZH = ['香港','澳门','台湾','日本','韩国','新加坡','美国','英国','法国','德国','澳大利亚','阿联酋','亚美尼亚','奥地利','巴西','加拿大','瑞士','印度','印尼','意大利','马来西亚','荷兰','菲律宾','俄罗斯','沙特阿拉伯','西班牙','泰国','土耳其','越南'];
+const EN = ['HK','MO','TW','JP','KR','SG','US','GB','FR','DE','AU','AE','AM','AT','BR','CA','CH','IN','ID','IT','MY','NL','PH','RU','SA','ES','TH','TR','VN'];
 
 /**
- * 1. 地区识别 (专项修复逻辑)
+ * 核心修复：高强度地区识别函数
  */
 function getRegionInfo(proxy) {
-  let name = proxy.name || "";
-  let server = (proxy.server || "").toLowerCase();
+    let name = proxy.name || "";
+    let server = (proxy.server || "").toLowerCase();
 
-  // 修复点：强制解码 URL 字符 (如 %20)，并剔除不可见的零宽干扰字符
-  try { 
-    name = decodeURIComponent(name).replace(/[\u200b-\u200d\ufeff]/g, ""); 
-  } catch(e) { }
-  
-  const allText = (name + server).toLowerCase();
+    // 1. 彻底解码：处理 %20 以及嵌套编码
+    try {
+        name = decodeURIComponent(name);
+        // 再次解码以防万一
+        if (name.includes('%')) name = decodeURIComponent(name);
+    } catch (e) {}
 
-  // 修复点：先通过字符串包含检测 Emoji，确保 🇭🇰 开头的节点必中
-  for (let i = 0; i < FG.length; i++) {
-    if (name.includes(FG[i])) {
-      return { flag: FG[i], region: ZH[i] };
+    // 2. 清理干扰：去除零宽字符、换行符、特殊空格
+    name = name.replace(/[\u200b-\u200d\ufeff\s]/g, " ").trim();
+    
+    const allText = (name + server).toLowerCase();
+
+    // 3. 策略一：Emoji 暴力匹配 (解决 🇭🇰%20 问题的关键)
+    // 直接遍历国旗数组，不使用 includes，改用 indexOf 确保兼容性
+    for (let i = 0; i < FG.length; i++) {
+        if (name.indexOf(FG[i]) !== -1) {
+            return { flag: FG[i], region: ZH[i] };
+        }
     }
-  }
 
-  // 兜底：正则匹配关键字
-  let index = -1;
-  if (/hong.?kong|hk|香港|港|hkg/.test(allText)) index = 0;
-  else if (/macao|mo|澳门/.test(allText)) index = 1;
-  else if (/taiwan|tw|台湾|台北|新北/.test(allText)) index = 2;
-  else if (/japan|jp|日本|东京|大阪|tokyo|osaka/.test(allText)) index = 3;
-  else if (/korea|kr|韩国|首尔|seoul/.test(allText)) index = 4;
-  else if (/singapore|sg|新加坡|狮城/.test(allText)) index = 5;
-  else if (/united.?states|us|美国|america/.test(allText)) index = 6;
-  else if (/united.?kingdom|uk|英国|london/.test(allText)) index = 7;
+    // 4. 策略二：中文/英文关键词正则匹配
+    let index = -1;
+    if (/hong.?kong|hk|香港|港|hkg/.test(allText)) index = 0;
+    else if (/macao|mo|澳门/.test(allText)) index = 1;
+    else if (/taiwan|tw|台湾|台北|tpe/.test(allText)) index = 2;
+    else if (/japan|jp|日本|东京|大阪|tokyo/.test(allText)) index = 3;
+    else if (/korea|kr|韩国|首尔|seoul/.test(allText)) index = 4;
+    else if (/singapore|sg|新加坡|狮城|sin/.test(allText)) index = 5;
+    else if (/united.?states|us|美国|america|lax|sfo/.test(allText)) index = 6;
+    else if (/united.?kingdom|uk|英国|london/.test(allText)) index = 7;
 
-  if (index === -1) {
-    index = EN.findIndex(code => new RegExp(`(?:^|[^A-Za-z])${code}(?:[^A-Za-z]|$)`, "i").test(allText));
-  }
+    // 5. 策略三：EN 国家代码边界匹配 (来自 2.js)
+    if (index === -1) {
+        index = EN.findIndex(code => {
+            const re = new RegExp(`(?:^|[^A-Za-z])${code}(?:[^A-Za-z]|$)`, "i");
+            return re.test(allText);
+        });
+    }
 
-  if (index !== -1) {
-    return { flag: FG[index], region: ZH[index] };
-  }
-  return { flag: "🏳️‍🌈", region: "其他" };
+    if (index !== -1) {
+        return { flag: FG[index] || "🏳️‍🌈", region: ZH[index] };
+    }
+
+    return { flag: "🏳️‍🌈", region: "其他" };
 }
 
 /**
- * 2. 入口简化 (IP 截取逻辑)
- */
-function simplifyEntry(text) {
-  let t = String(text || "").replace(/^www\./i, "").replace(/\.(com|net|org|xyz|io|208808\.xyz)$/i, "").trim();
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(t)) {
-    const parts = t.split(".");
-    // 严格保留前三段
-    return `${parts[0]}.${parts[1]}.${parts[2]}`;
-  }
-  return t.length > 12 ? t.slice(0, 12) : t;
-}
-
-/**
- * 3. 协议特征识别
+ * 协议识别 (来自 1.js)
  */
 function detectFeature(proxy) {
-  const f = (k) => String(proxy[k] || "").toLowerCase();
-  const type = f("type"), flow = f("flow"), security = f("security") || f("tls"), sn = f("serviceName"), path = f("path");
+    const f = (k) => String(proxy[k] || "").toLowerCase();
+    const type = f("type"), flow = f("flow"), sec = f("security") || f("tls"), sn = f("serviceName"), path = f("path");
 
-  if (flow.includes("vision")) return (type === "grpc" || sn) ? "Vision-gRPC" : "Vision";
-  if (type === "grpc" || sn) return security === "reality" ? "Reality-gRPC" : "gRPC";
-  if (type === "ws" || path) return security === "reality" ? "Reality-WS" : "WS";
-  if (security === "reality") return "Reality";
-  if (type === "tuic") return "TUIC";
-  if (type === "hysteria2" || type === "hy2") return "Hysteria2";
-  return type ? type.toUpperCase() : "NODE";
+    if (flow.includes("vision")) return "Vision";
+    if (sec === "reality") return (type === "grpc" || sn) ? "Reality-gRPC" : "Reality";
+    if (type === "grpc" || sn) return "gRPC";
+    if (type === "ws" || path) return "WS";
+    if (type === "tuic") return "TUIC";
+    if (type === "hysteria2" || type === "hy2") return "Hysteria2";
+    return type ? type.toUpperCase() : "NODE";
 }
 
 /**
- * 主函数
+ * IP段提取：保留前三个字段
+ */
+function getIP(proxy) {
+    const host = proxy.server || "";
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+        const p = host.split(".");
+        return `${p[0]}.${p[1]}.${p[2]}`;
+    }
+    // 如果是域名，取前段
+    return host.split(".")[0];
+}
+
+/**
+ * 主逻辑
  */
 function operator(proxies) {
-  const counters = {};
+    const counters = {};
+    const nameclear = /(套餐|到期|有效|剩余|版本|已用|过期|失联|测试|官方|网址|订阅|流量|机场)/i;
 
-  // 过滤
-  if (clear) proxies = proxies.filter(p => !nameclear.test(p.name));
+    // 过滤
+    let list = clear ? proxies.filter(p => !nameclear.test(p.name)) : proxies;
 
-  return proxies.map(p => {
-    const { flag, region } = getRegionInfo(p);
-    const entry = simplifyEntry(p.server || p.name);
-    const feature = detectFeature(p);
+    // 第一遍重命名：组装基础格式
+    list = list.map(p => {
+        const info = getRegionInfo(p);
+        const ip = getIP(p);
+        const proto = detectFeature(p);
 
-    const baseName = `${addflag ? flag + ' ' : ''}${region} | ${entry} | ${feature}`;
-    
-    // 计数与编号
-    counters[baseName] = (counters[baseName] || 0) + 1;
-    const num = String(counters[baseName]).padStart(2, "0");
-    
-    const finalName = `${baseName} ${num}`;
-    
-    // 处理单节点隐藏编号
-    p.name = finalName;
-    p._base = baseName;
-    return p;
-  }).map((p, _, all) => {
-    if (numone && all.filter(x => x._base === p._base).length === 1) {
-      p.name = p.name.replace(/\s\d+$/, "");
+        const base = `${addflag ? info.flag + ' ' : ''}${info.region} | ${ip} | ${proto}`;
+        
+        counters[base] = (counters[base] || 0) + 1;
+        const num = String(counters[base]).padStart(2, "0");
+        
+        p.name = `${base} ${num}`;
+        p._base = base;
+        return p;
+    });
+
+    // 第二遍：处理单节点去编号 (one 开关)
+    if (numone) {
+        const counts = {};
+        list.forEach(p => counts[p._base] = (counts[p._base] || 0) + 1);
+        list.forEach(p => {
+            if (counts[p._base] === 1) {
+                p.name = p.name.replace(/\s\d+$/, "");
+            }
+        });
     }
-    delete p._base;
-    return p;
-  });
+
+    // 清理临时属性
+    list.forEach(p => delete p._base);
+    return list;
 }
