@@ -1,53 +1,59 @@
 /**
- * Sub-Store 基础回归版重命名脚本
- * 逻辑：国旗 地区 | IP前三段 | 协议 编号
+ * Sub-Store 重命名脚本 - 第一版回归加固版
+ * 1. 识别格式：国旗 地区 | IP前三段 | 协议 编号
+ * 2. 核心修复：解决 IP undefined 问题，确保 Emoji 正常解码
  */
 
 function operator(proxies) {
   const inArg = $arguments || {};
   const addflag = !/^(false|0|off|no)$/i.test(inArg.flag); // 默认开启国旗
-  const numone  = /^(true|1|on|yes)$/i.test(inArg.one);     // 默认单节点不带编号
+  const numone  = /^(true|1|on|yes)$/i.test(inArg.one);     // 单节点不带编号
 
   const counters = {};
 
   return proxies.map(p => {
-    // 1. 获取名称并简单解码
+    // === 1. 基础信息处理 ===
     let name = p.name || "";
-    try {
-      name = decodeURIComponent(name);
-    } catch (e) {}
-    
     const server = (p.server || "").toLowerCase();
+    
+    // 强制解码，处理 %20 和 Emoji 编码
+    try {
+      name = decodeURIComponent(decodeURIComponent(name));
+    } catch (e) {
+      try { name = decodeURIComponent(name); } catch (e2) {}
+    }
+    
     const allText = (name + server).toLowerCase();
 
-    // 2. 地域识别 (最简单的关键字匹配)
+    // === 2. 地域识别 (回归第一版简洁逻辑) ===
     let info = { flag: "🏳️‍🌈", region: "其他" };
 
-    if (allText.includes("香港") || allText.includes("hk") || allText.includes("154.222")) {
+    if (allText.includes("香港") || allText.includes("hk") || allText.includes("🇭🇰") || allText.includes("154.222")) {
       info = { flag: "🇭🇰", region: "香港" };
-    } else if (allText.includes("台湾") || allText.includes("tw")) {
+    } else if (allText.includes("台湾") || allText.includes("tw") || allText.includes("🇹🇼")) {
       info = { flag: "🇹🇼", region: "台湾" };
-    } else if (allText.includes("日本") || allText.includes("jp") || allText.includes("tokyo")) {
+    } else if (allText.includes("日本") || allText.includes("jp") || allText.includes("🇯🇵")) {
       info = { flag: "🇯🇵", region: "日本" };
-    } else if (allText.includes("新加坡") || allText.includes("sg") || allText.includes("singapore")) {
+    } else if (allText.includes("新加坡") || allText.includes("sg") || allText.includes("🇸🇬")) {
       info = { flag: "🇸🇬", region: "新加坡" };
-    } else if (allText.includes("美国") || allText.includes("us") || allText.includes("united")) {
+    } else if (allText.includes("美国") || allText.includes("us") || allText.includes("🇺🇸")) {
       info = { flag: "🇺🇸", region: "美国" };
+    } else if (allText.includes("韩国") || allText.includes("kr") || allText.includes("🇰🇷")) {
+      info = { flag: "🇰🇷", region: "韩国" };
     }
 
-    // 3. 稳健 IP 提取 (同步逻辑，绝无 undefined)
-    let ipStr = server;
+    // === 3. IP 提取 (彻底修复 undefined) ===
+    // 逻辑：直接分割字符串，不使用正则
+    let ipDisplay = server;
     if (server.includes(".")) {
       const parts = server.split(".");
       if (parts.length >= 3) {
-        // 强制拼接前三段
-        ipStr = `${parts[0]}.${parts[1]}.${parts[2]}`;
-      } else {
-        ipStr = parts[0];
+        // 拼接前三位：123.123.123
+        ipDisplay = parts[0] + "." + parts[1] + "." + parts[2];
       }
     }
 
-    // 4. 协议识别 (根据 1.js 逻辑)
+    // === 4. 协议识别 ===
     const type = (p.type || "").toLowerCase();
     const flow = (p.flow || "").toLowerCase();
     const sec = (p.security || p.tls || "").toLowerCase();
@@ -58,10 +64,9 @@ function operator(proxies) {
     else if (type === "hysteria2" || type === "hy2") proto = "Hy2";
     else if (type === "tuic") proto = "TUIC";
 
-    // 5. 组装格式
-    const base = `${addflag ? info.flag + ' ' : ''}${info.region} | ${ipStr} | ${proto}`;
+    // === 5. 组合最终名称 ===
+    const base = `${addflag ? info.flag + ' ' : ''}${info.region} | ${ipDisplay} | ${proto}`;
     
-    // 编号逻辑
     counters[base] = (counters[base] || 0) + 1;
     const num = String(counters[base]).padStart(2, "0");
     
@@ -69,11 +74,10 @@ function operator(proxies) {
     p._base = base;
     return p;
   }).map((p, i, all) => {
-    // 单节点去编号
+    // 单节点隐藏编号逻辑
     if (numone) {
-      if (all.filter(x => x._base === p._base).length === 1) {
-        p.name = p.name.replace(/\s\d+$/, "");
-      }
+      const isOnlyOne = all.filter(x => x._base === p._base).length === 1;
+      if (isOnlyOne) p.name = p.name.replace(/\s\d+$/, "");
     }
     delete p._base;
     return p;
