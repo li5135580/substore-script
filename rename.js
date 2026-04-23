@@ -1,8 +1,8 @@
 /**
- * Ultimate Sub-Store Rename Script（简化版，无编号）
+ * Ultimate Sub-Store Rename Script（增强版，支持URL编码国旗）
  *
  * 功能：
- * 1. 自动识别地区（中/英/关键词）
+ * 1. 自动识别地区（中/英/关键词 + URL编码国旗）
  * 2. 自动提取IP前三段 / 域名简化
  * 3. 自动识别协议类型（Vision / Reality / WS / gRPC / TCP）
  * 4. 自动过滤信息节点
@@ -24,6 +24,15 @@ function operator(proxies = []) {
   // 转小写
   const lower = (v) => String(v || "").toLowerCase();
 
+  // URL解码
+  const decodeURIComponentSafe = (str) => {
+    try {
+      return decodeURIComponent(str);
+    } catch (e) {
+      return str; // 解码失败则返回原字符串
+    }
+  };
+
   // ==================== 信息节点过滤 ====================
 
   const nameClearRegex = /(套餐|到期|剩余|流量|订阅|官网|客服|测试|群|过期|工单)/i;
@@ -41,6 +50,17 @@ function operator(proxies = []) {
     ["其他", "🌍"]
   ]);
 
+  // 国旗emoji到地区的映射
+  const EMOJI_TO_REGION = new Map([
+    ["🇭🇰", "香港"],
+    ["🇯🇵", "日本"],
+    ["🇰🇷", "韩国"],
+    ["🇹🇼", "台湾"],
+    ["🇸🇬", "新加坡"],
+    ["🇺🇸", "美国"],
+    ["🇬🇧", "英国"]
+  ]);
+
   // ==================== 地区识别规则 ====================
 
   const REGION_PATTERNS = [
@@ -56,6 +76,17 @@ function operator(proxies = []) {
   // ==================== 地区识别函数 ====================
 
   const detectRegion = (text) => {
+    // 首先检查是否包含国旗emoji
+    const emojiMatch = text.match(/[\uD83C][\uDDE6-\uDDFF][\uD83C][\uDDE6-\uDDFF]/g);
+    if (emojiMatch) {
+      for (const emoji of emojiMatch) {
+        if (EMOJI_TO_REGION.has(emoji)) {
+          return EMOJI_TO_REGION.get(emoji);
+        }
+      }
+    }
+
+    // 然后按常规模式匹配
     for (const { region, patterns } of REGION_PATTERNS) {
       if (patterns.some(pattern => pattern.test(text))) {
         return region;
@@ -115,8 +146,11 @@ function operator(proxies = []) {
   const filteredProxies = proxies.filter(p => !nameClearRegex.test(p.name));
 
   return filteredProxies.map(p => {
+    // 获取节点名称并进行URL解码
+    const decodedName = decodeURIComponentSafe(p.name || "");
+    
     const text = lower([
-      p.name,
+      decodedName,
       p.server,
       p.sni,
       p.host
@@ -142,14 +176,29 @@ function operator(proxies = []) {
 }
 
 // 测试用例
-console.log("简化版脚本加载完成");
+console.log("增强版脚本加载完成");
 
 // 示例使用
 /*
 const testProxies = [
-  { name: "日本东京-01", server: "192.168.1.100", network: "grpc", security: "reality", flow: "" },
-  { name: "套餐信息", server: "192.168.1.101", network: "tcp", security: "", flow: "" },
-  { name: "日本大阪-02", server: "192.168.2.200", network: "ws", security: "reality", flow: "" }
+  { 
+    name: "hk%20ser659347229709%20tuic", 
+    server: "154.222.22.91", 
+    sni: "addons.mozilla.org", 
+    type: "tcp", 
+    network: "tcp", 
+    security: "reality", 
+    flow: ""
+  },
+  { 
+    name: "%F0%9F%87%AD%F0%9F%87%B0%20ser659347229709%20xtls-reality", // 🇭🇰 URL编码
+    server: "154.222.22.91", 
+    sni: "addons.mozilla.org", 
+    type: "tcp", 
+    network: "tcp", 
+    security: "reality", 
+    flow: "xtls-rprx-vision"
+  }
 ];
 
 console.log(operator(testProxies));
