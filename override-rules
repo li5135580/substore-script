@@ -1,5 +1,5 @@
 /**
- * powerfullz 的 Substore 订阅转换脚本（优化版）
+ * powerfullz 的 Substore 订阅转换脚本（增强版，修复国家分组）
  * 
  * 支持的传入参数：
  * - loadbalance: 启用负载均衡（url-test/load-balance，默认 false）
@@ -347,92 +347,29 @@ function parseArguments(args = {}) {
   return config;
 }
 
-// 创建国家代理组
-function createCountryProxyGroups({ countries, landing, loadBalance, regexFilter, countryInfo }) {
-  const groups = [];
-  const groupType = loadBalance ? "load-balance" : "url-test";
-  
-  const proxyMap = regexFilter ? null : Object.fromEntries(
-    countryInfo.map(item => [item.country, item.nodes])
-  );
-
-  for (const country of countries) {
-    const countryConfig = COUNTRY_INFO[country];
-    if (!countryConfig) continue;
-
-    const group = {
-      name: `${country}节点`,
-      icon: countryConfig.icon,
-      type: groupType,
-      url: "https://cp.cloudflare.com/generate_204",
-      interval: 60,
-      tolerance: 20,
-      ...(loadBalance && { strategy: "sticky-sessions" })
-    };
-
-    if (regexFilter) {
-      Object.assign(group, {
-        "include-all": true,
-        filter: countryConfig.pattern,
-        "exclude-filter": landing ? `${LANDING_PATTERN}|${LOW_RATE_PATTERN}` : LOW_RATE_PATTERN
-      });
-    } else {
-      const proxies = proxyMap?.[country] || [];
-      Object.assign(group, { proxies });
-    }
-
-    groups.push(group);
-  }
-
-  return groups;
-}
-
-// 识别低倍率节点
-function identifyLowRateNodes(proxies) {
-  const lowRatePattern = new RegExp(LOW_RATE_PATTERN, "i");
-  return (proxies || [])
-    .filter(proxy => lowRatePattern.test(proxy.name || ""))
-    .map(proxy => proxy.name)
-    .filter(name => !!name);
-}
-
-// 分类节点
-function categorizeNodes(proxies) {
-  const landingPattern = new RegExp(LANDING_PATTERN, "i");
-  const lowRatePattern = new RegExp(LOW_RATE_PATTERN, "i");
-  
-  const landingNodes = [];
-  const nonLandingNodes = [];
-
-  for (const proxy of proxies || []) {
-    const name = proxy.name || "";
-    if (landingPattern.test(name)) {
-      landingNodes.push(name);
-    } else if (!lowRatePattern.test(name)) {
-      nonLandingNodes.push(name);
-    }
-  }
-
-  return { landingNodes, nonLandingNodes };
-}
-
-// 按国家分类节点
+// 按国家分类节点（修复版）
 function classifyByCountry(proxies) {
-  const countryMap = {};
   const nodes = proxies || [];
-  
-  for (const node of nodes) {
-    const name = node.name || "";
+  const countryMap = {};
+
+  // 创建国家模式正则表达式映射
+  const countryPatterns = {};
+  for (const [country, config] of Object.entries(COUNTRY_INFO)) {
+    countryPatterns[country] = new RegExp(config.pattern, "i");
+  }
+
+  for (const proxy of nodes) {
+    const name = proxy.name || "";
     if (!name) continue;
-    
+
     // 检查是否为落地节点或低倍率节点
     if (new RegExp(LANDING_PATTERN, "i").test(name) || new RegExp(LOW_RATE_PATTERN, "i").test(name)) {
       continue;
     }
-    
+
     // 按国家分类
-    for (const [country, config] of Object.entries(COUNTRY_INFO)) {
-      if (new RegExp(config.pattern.replace(/^\(\?i\)/, ""), "i").test(name)) {
+    for (const [country, pattern] of Object.entries(countryPatterns)) {
+      if (pattern.test(name)) {
         if (!countryMap[country]) {
           countryMap[country] = [];
         }
@@ -442,6 +379,7 @@ function classifyByCountry(proxies) {
     }
   }
 
+  // 返回按国家分组的数据
   return Object.entries(countryMap).map(([country, nodes]) => ({
     country,
     nodes
@@ -463,8 +401,139 @@ function filterAndSortCountries(countryData, threshold) {
 
 // 移除"节点"后缀
 function removeNodeSuffix(names) {
-  const suffixRegex = new RegExp(`${"节点"}$`);
-  return names.map(name => name.replace(suffixRegex, ""));
+  return names.map(name => name.replace(/节点$/, ""));
+}
+
+// 识别低倍率节点
+function identifyLowRateNodes(proxies) {
+  const lowRatePattern = new RegExp(LOW_RATE_PATTERN, "i");
+  return (proxies || [])
+    .filter(proxy => lowRatePattern.test(proxy.name || ""))
+    .map(proxy => proxy.name)
+    .filter(name => !!name);
+}
+
+// 分类节点（落地节点和其他）
+function categorizeNodes(proxies) {
+  const landingPattern = new RegExp(LANDING_PATTERN, "i");
+  const lowRatePattern = new RegExp(LOW_RATE_PATTERN, "i");
+  
+  const landingNodes = [];
+  const otherNodes = [];
+
+  for (const proxy of proxies || []) {
+    const name = proxy.name || "";
+    if (name) {
+      if (landingPattern.test(name)) {
+        landingNodes.push(name);
+      } else if (!lowRatePattern.test(name)) {
+        otherNodes.push(name);
+      }
+    }
+  }
+
+  return { landingNodes, otherNodes };
+}
+
+// 创建国家代理组
+function createCountryProxyGroups({ countries, landing, loadBalance, regexFilter, countryInfo }) {
+  const groups = [];
+  const groupType = loadBalance ? "load-balance" : "url-test";
+  
+  // 创建国家名称到节点的映射
+  const countryNodeMap = {};
+  for (const item of countryInfo) {
+    countryNodeMap[item.country] = item.nodes;
+  }
+
+  for (const country of countries) {
+    // 提取国家名称（去掉"节点"后缀）
+    const countryName = country.replace(/节点$/, "");
+    const countryConfig = COUNTRY_INFO[countryName];
+    
+    if (!countryConfig) continue;
+
+    const group = {
+      name: country,
+      icon: countryConfig.icon,
+      type: groupType,
+      url: "https://cp.cloudflare.com/generate_204",
+      interval: 60,
+      tolerance: 20,
+      ...(loadBalance && { strategy: "sticky-sessions" })
+    };
+
+    if (regexFilter) {
+      Object.assign(group, {
+        "include-all": true,
+        filter: countryConfig.pattern,
+        "exclude-filter": landing ? `${LANDING_PATTERN}|${LOW_RATE_PATTERN}` : LOW_RATE_PATTERN
+      });
+    } else {
+      const proxies = countryNodeMap[countryName] || [];
+      Object.assign(group, { proxies });
+    }
+
+    groups.push(group);
+  }
+
+  return groups;
+}
+
+// 构建默认代理组
+function buildDefaultProxyGroups({ landing, lowCostNodes, countryGroupNames, otherNodes, regexFilter }) {
+  const hasLowCostOrRegex = lowCostNodes.length > 0 || regexFilter;
+  const landingGroup = landing ? GROUP_NAMES.LANDING : null;
+  
+  const defaultProxies = flattenAndFilter([
+    GROUP_NAMES.SELECT,
+    landingGroup,
+    countryGroupNames,
+    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
+    GROUP_NAMES.MANUAL,
+    "DIRECT"
+  ]);
+  
+  const defaultProxiesDirect = flattenAndFilter([
+    GROUP_NAMES.DIRECT,
+    landingGroup,
+    countryGroupNames,
+    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
+    GROUP_NAMES.SELECT,
+    GROUP_NAMES.MANUAL
+  ]);
+  
+  const defaultSelector = flattenAndFilter([
+    GROUP_NAMES.AUTO,
+    GROUP_NAMES.FALLBACK,
+    landingGroup,
+    countryGroupNames,
+    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
+    GROUP_NAMES.MANUAL,
+    "DIRECT"
+  ]);
+  
+  const defaultFallback = flattenAndFilter([
+    landingGroup,
+    countryGroupNames,
+    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
+    GROUP_NAMES.MANUAL,
+    "DIRECT"
+  ]);
+  
+  const frontProxySelector = flattenAndFilter([
+    countryGroupNames,
+    "DIRECT",
+    !regexFilter && otherNodes
+  ]);
+
+  return {
+    defaultProxies,
+    defaultProxiesDirect,
+    defaultSelector,
+    defaultFallback,
+    frontProxySelector
+  };
 }
 
 // 创建主代理组
@@ -730,62 +799,6 @@ function buildDNSConfig({ mode, ipv6Enabled, fakeIpFilter }) {
   return config;
 }
 
-// 构建默认代理组
-function buildDefaultProxyGroups({ landing, lowCostNodes, countryGroupNames, nonLandingNodes, regexFilter }) {
-  const hasLowCostOrRegex = lowCostNodes.length > 0 || regexFilter;
-  const landingGroup = landing ? GROUP_NAMES.LANDING : null;
-  
-  const defaultProxies = flattenAndFilter([
-    GROUP_NAMES.SELECT,
-    landingGroup,
-    countryGroupNames,
-    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
-    GROUP_NAMES.MANUAL,
-    "DIRECT"
-  ]);
-  
-  const defaultProxiesDirect = flattenAndFilter([
-    GROUP_NAMES.DIRECT,
-    landingGroup,
-    countryGroupNames,
-    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
-    GROUP_NAMES.SELECT,
-    GROUP_NAMES.MANUAL
-  ]);
-  
-  const defaultSelector = flattenAndFilter([
-    GROUP_NAMES.AUTO,
-    GROUP_NAMES.FALLBACK,
-    landingGroup,
-    countryGroupNames,
-    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
-    GROUP_NAMES.MANUAL,
-    "DIRECT"
-  ]);
-  
-  const defaultFallback = flattenAndFilter([
-    landingGroup,
-    countryGroupNames,
-    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
-    GROUP_NAMES.MANUAL,
-    "DIRECT"
-  ]);
-  
-  const frontProxySelector = flattenAndFilter([
-    countryGroupNames,
-    "DIRECT",
-    !regexFilter && nonLandingNodes
-  ]);
-
-  return {
-    defaultProxies,
-    defaultProxiesDirect,
-    defaultSelector,
-    defaultFallback,
-    frontProxySelector
-  };
-}
-
 // 主处理函数
 function main(subscription) {
   try {
@@ -794,10 +807,10 @@ function main(subscription) {
 
     const proxies = subscription.proxies || [];
     
-    // 分析节点
+    // 分析节点 - 关键步骤
     const countryData = classifyByCountry(proxies);
     const lowCostNodes = identifyLowRateNodes(proxies);
-    const { landingNodes, nonLandingNodes } = config.landing ? categorizeNodes(proxies) : { landingNodes: [], nonLandingNodes: [] };
+    const { landingNodes, otherNodes } = config.landing ? categorizeNodes(proxies) : { landingNodes: [], otherNodes: [] };
     
     // 过滤和排序国家
     const countryGroupNames = filterAndSortCountries(countryData, config.countryThreshold);
@@ -814,13 +827,13 @@ function main(subscription) {
       landing: config.landing,
       lowCostNodes,
       countryGroupNames,
-      nonLandingNodes,
+      otherNodes,
       regexFilter: config.regexFilter
     });
     
     // 创建国家代理组
     const countryProxyGroups = createCountryProxyGroups({
-      countries: countryNames,
+      countries: countryGroupNames,
       landing: config.landing,
       loadBalance: config.loadBalance,
       regexFilter: config.regexFilter,
