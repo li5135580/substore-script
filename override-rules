@@ -1,0 +1,894 @@
+/**
+ * powerfullz 的 Substore 订阅转换脚本（优化版）
+ * 
+ * 支持的传入参数：
+ * - loadbalance: 启用负载均衡（url-test/load-balance，默认 false）
+ * - landing: 启用落地节点功能（如机场家宽/星链/落地分组，默认 false）
+ * - ipv6: 启用 IPv6 支持（默认 false）
+ * - full: 输出完整配置（适合纯内核启动，默认 false）
+ * - keepalive: 启用 tcp-keep-alive（默认 false）
+ * - fakeip: DNS 使用 FakeIP 模式（默认 true，false 为 RedirHost）
+ * - quic: 允许 QUIC 流量（UDP 443，默认 false）
+ * - threshold: 地区节点数量小于该值时不显示分组 (默认 0)
+ * - regex: 使用正则过滤模式（include-all + filter）写入各地区代理组，而非直接枚举节点名称（默认 false）
+ */
+
+// CDN 和配置常量
+const CDN_BASE = "https://cdn.jsdelivr.net";
+const LOW_RATE_PATTERN = "0\\.[0-5]|低倍率|省流|实验性";
+const LANDING_PATTERN = "(?i)家宽|家庭宽带|商宽|商业宽带|星链|Starlink|落地";
+
+// 默认配置
+const DEFAULT_CONFIG = {
+  loadBalance: false,
+  landing: false,
+  ipv6Enabled: false,
+  fullConfig: false,
+  keepAliveEnabled: false,
+  fakeIPEnabled: true,
+  quicEnabled: false,
+  regexFilter: false,
+};
+
+// 代理组名称映射
+const GROUP_NAMES = {
+  SELECT: "选择代理",
+  MANUAL: "手动选择",
+  AUTO: "自动选择",
+  FALLBACK: "故障转移",
+  DIRECT: "直连",
+  LANDING: "落地节点",
+  LOW_COST: "低倍率节点",
+  FRONT_PROXY: "前置代理",
+  STATIC_RESOURCES: "静态资源",
+  AI_SERVICE: "AI服务",
+  CRYPTO: "加密货币",
+  APPLE: "苹果服务",
+  GOOGLE: "谷歌服务",
+  MICROSOFT: "微软服务",
+  BILIBILI: "哔哩哔哩",
+  BAHAMUT: "巴哈姆特",
+  YOUTUBE: "YouTube",
+  NETFLIX: "Netflix",
+  TIKTOK: "TikTok",
+  SPOTIFY: "Spotify",
+  EHENTAI: "E-Hentai",
+  TELEGRAM: "Telegram",
+  TRUTH_SOCIAL: "真相社交",
+  PIKPAK: "PikPak网盘",
+  SSH: "SSH(22端口)",
+  SOGOU_INPUT: "搜狗输入法",
+  AD_BLOCK: "广告拦截",
+  GLOBAL: "GLOBAL"
+};
+
+// 规则集配置
+const RULE_SETS = {
+  ADBlock: {
+    type: "http",
+    behavior: "domain",
+    format: "mrs",
+    interval: 86400,
+    url: `${CDN_BASE}/gh/217heidai/adblockfilters@main/rules/adblockmihomolite.mrs`,
+    path: "./ruleset/ADBlock.mrs"
+  },
+  SogouInput: {
+    type: "http",
+    behavior: "classical",
+    format: "text",
+    interval: 86400,
+    url: "https://ruleset.skk.moe/Clash/non_ip/sogouinput.txt",
+    path: "./ruleset/SogouInput.txt"
+  },
+  StaticResources: {
+    type: "http",
+    behavior: "domain",
+    format: "text",
+    interval: 86400,
+    url: "https://ruleset.skk.moe/Clash/domainset/cdn.txt",
+    path: "./ruleset/StaticResources.txt"
+  },
+  CDNResources: {
+    type: "http",
+    behavior: "classical",
+    format: "text",
+    interval: 86400,
+    url: "https://ruleset.skk.moe/Clash/non_ip/cdn.txt",
+    path: "./ruleset/CDNResources.txt"
+  },
+  TikTok: {
+    type: "http",
+    behavior: "classical",
+    format: "text",
+    interval: 86400,
+    url: `${CDN_BASE}/gh/powerfullz/override-rules@master/ruleset/TikTok.list`,
+    path: "./ruleset/TikTok.list"
+  },
+  EHentai: {
+    type: "http",
+    behavior: "classical",
+    format: "text",
+    interval: 86400,
+    url: `${CDN_BASE}/gh/powerfullz/override-rules@master/ruleset/EHentai.list`,
+    path: "./ruleset/EHentai.list"
+  },
+  SteamFix: {
+    type: "http",
+    behavior: "classical",
+    format: "text",
+    interval: 86400,
+    url: `${CDN_BASE}/gh/powerfullz/override-rules@master/ruleset/SteamFix.list`,
+    path: "./ruleset/SteamFix.list"
+  },
+  GoogleFCM: {
+    type: "http",
+    behavior: "classical",
+    format: "text",
+    interval: 86400,
+    url: `${CDN_BASE}/gh/powerfullz/override-rules@master/ruleset/FirebaseCloudMessaging.list`,
+    path: "./ruleset/FirebaseCloudMessaging.list"
+  },
+  AdditionalFilter: {
+    type: "http",
+    behavior: "classical",
+    format: "text",
+    interval: 86400,
+    url: `${CDN_BASE}/gh/powerfullz/override-rules@master/ruleset/AdditionalFilter.list`,
+    path: "./ruleset/AdditionalFilter.list"
+  },
+  AdditionalCDNResources: {
+    type: "http",
+    behavior: "classical",
+    format: "text",
+    interval: 86400,
+    url: `${CDN_BASE}/gh/powerfullz/override-rules@master/ruleset/AdditionalCDNResources.list`,
+    path: "./ruleset/AdditionalCDNResources.list"
+  },
+  Crypto: {
+    type: "http",
+    behavior: "classical",
+    format: "text",
+    interval: 86400,
+    url: `${CDN_BASE}/gh/powerfullz/override-rules@master/ruleset/Crypto.list`,
+    path: "./ruleset/Crypto.list"
+  }
+};
+
+// 规则列表
+const RULES = [
+  `RULE-SET,ADBlock,${GROUP_NAMES.AD_BLOCK}`,
+  `RULE-SET,AdditionalFilter,${GROUP_NAMES.AD_BLOCK}`,
+  `RULE-SET,SogouInput,${GROUP_NAMES.SOGOU_INPUT}`,
+  `DOMAIN-SUFFIX,truthsocial.com,${GROUP_NAMES.TRUTH_SOCIAL}`,
+  `RULE-SET,StaticResources,${GROUP_NAMES.STATIC_RESOURCES}`,
+  `RULE-SET,CDNResources,${GROUP_NAMES.STATIC_RESOURCES}`,
+  `RULE-SET,AdditionalCDNResources,${GROUP_NAMES.STATIC_RESOURCES}`,
+  `RULE-SET,Crypto,${GROUP_NAMES.CRYPTO}`,
+  `RULE-SET,EHentai,${GROUP_NAMES.EHENTAI}`,
+  `RULE-SET,TikTok,${GROUP_NAMES.TIKTOK}`,
+  `RULE-SET,SteamFix,${GROUP_NAMES.DIRECT}`,
+  `RULE-SET,GoogleFCM,${GROUP_NAMES.DIRECT}`,
+  `GEOSITE,YOUTUBE,${GROUP_NAMES.YOUTUBE}`,
+  `GEOSITE,TELEGRAM,${GROUP_NAMES.TELEGRAM}`,
+  `GEOSITE,CATEGORY-AI-!CN,${GROUP_NAMES.AI_SERVICE}`,
+  `GEOSITE,GOOGLE-PLAY@CN,${GROUP_NAMES.DIRECT}`,
+  `GEOSITE,MICROSOFT@CN,${GROUP_NAMES.DIRECT}`,
+  `GEOSITE,APPLE,${GROUP_NAMES.APPLE}`,
+  `GEOSITE,MICROSOFT,${GROUP_NAMES.MICROSOFT}`,
+  `GEOSITE,GOOGLE,${GROUP_NAMES.GOOGLE}`,
+  `GEOSITE,NETFLIX,${GROUP_NAMES.NETFLIX}`,
+  `GEOSITE,SPOTIFY,${GROUP_NAMES.SPOTIFY}`,
+  `GEOSITE,BAHAMUT,${GROUP_NAMES.BAHAMUT}`,
+  `GEOSITE,BILIBILI,${GROUP_NAMES.BILIBILI}`,
+  `GEOSITE,PIKPAK,${GROUP_NAMES.PIKPAK}`,
+  `GEOSITE,GFW,${GROUP_NAMES.SELECT}`,
+  `GEOSITE,CN,${GROUP_NAMES.DIRECT}`,
+  `GEOSITE,PRIVATE,${GROUP_NAMES.DIRECT}`,
+  `GEOIP,NETFLIX,${GROUP_NAMES.NETFLIX},no-resolve`,
+  `GEOIP,TELEGRAM,${GROUP_NAMES.TELEGRAM},no-resolve`,
+  `GEOIP,CN,${GROUP_NAMES.DIRECT}`,
+  `GEOIP,PRIVATE,${GROUP_NAMES.DIRECT}`,
+  `DST-PORT,22,${GROUP_NAMES.SSH}`,
+  `MATCH,${GROUP_NAMES.SELECT}`
+];
+
+// DNS嗅探配置
+const SNIFFER_CONFIG = {
+  sniff: {
+    TLS: { ports: [443, 8443] },
+    HTTP: { ports: [80, 8080, 8880] },
+    QUIC: { ports: [443, 8443] }
+  },
+  "override-destination": false,
+  enable: true,
+  "force-dns-mapping": true,
+  "skip-domain": ["Mijia Cloud", "dlg.io.mi.com", "+.push.apple.com"]
+};
+
+// 跳过FakeIP的域名
+const FAKE_IP_SKIP_DOMAINS = [
+  "geosite:private",
+  "geosite:connectivity-check",
+  "geosite:cn",
+  "Mijia Cloud",
+  "dig.io.mi.com",
+  "localhost.ptlogin2.qq.com",
+  "*.icloud.com",
+  "*.stun.*.*",
+  "*.stun.*.*.*"
+];
+
+// Geo数据源
+const GEO_DATA_SOURCES = {
+  geoip: `${CDN_BASE}/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat`,
+  geosite: `${CDN_BASE}/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat`,
+  mmdb: `${CDN_BASE}/gh/Loyalsoldier/geoip@release/Country.mmdb`,
+  asn: `${CDN_BASE}/gh/Loyalsoldier/geoip@release/GeoLite2-ASN.mmdb`
+};
+
+// 国家/地区配置
+const COUNTRY_INFO = {
+  香港: {
+    weight: 10,
+    pattern: "香港|港|HK|hk|Hong Kong|HongKong|hongkong|🇭🇰",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Hong_Kong.png`
+  },
+  澳门: {
+    pattern: "澳门|MO|Macau|🇲🇴",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Macao.png`
+  },
+  台湾: {
+    weight: 20,
+    pattern: "台|新北|彰化|TW|Taiwan|🇹🇼",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Taiwan.png`
+  },
+  新加坡: {
+    weight: 30,
+    pattern: "新加坡|坡|狮城|SG|Singapore|🇸🇬",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Singapore.png`
+  },
+  日本: {
+    weight: 40,
+    pattern: "日本|川日|东京|大阪|泉日|埼玉|沪日|深日|JP|Japan|🇯🇵",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Japan.png`
+  },
+  韩国: {
+    pattern: "KR|Korea|KOR|首尔|韩|韓|🇰🇷",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Korea.png`
+  },
+  美国: {
+    weight: 50,
+    pattern: "美国|美|US|United States|🇺🇸",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/United_States.png`
+  },
+  加拿大: {
+    pattern: "加拿大|Canada|CA|🇨🇦",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Canada.png`
+  },
+  英国: {
+    weight: 60,
+    pattern: "英国|United Kingdom|UK|伦敦|London|🇬🇧",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/United_Kingdom.png`
+  },
+  澳大利亚: {
+    pattern: "澳洲|澳大利亚|AU|Australia|🇦🇺",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Australia.png`
+  },
+  德国: {
+    weight: 70,
+    pattern: "德国|德|DE|Germany|🇩🇪",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Germany.png`
+  },
+  法国: {
+    weight: 80,
+    pattern: "法国|法|FR|France|🇫🇷",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/France.png`
+  },
+  俄罗斯: {
+    pattern: "俄罗斯|俄|RU|Russia|🇷🇺",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Russia.png`
+  },
+  泰国: {
+    pattern: "泰国|泰|TH|Thailand|🇹🇭",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Thailand.png`
+  },
+  印度: {
+    pattern: "印度|IN|India|🇮🇳",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/India.png`
+  },
+  马来西亚: {
+    pattern: "马来西亚|马来|MY|Malaysia|🇲🇾",
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Malaysia.png`
+  }
+};
+
+// 工具函数
+function parseBoolean(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return value.toLowerCase() === "true" || value === "1";
+  return false;
+}
+
+function parseIntSafe(value, defaultValue = 0) {
+  if (value === null || typeof value === "undefined") return defaultValue;
+  const parsed = parseInt(String(value), 10);
+  return isNaN(parsed) ? defaultValue : parsed;
+}
+
+function flattenAndFilter(array) {
+  return array.flat().filter(Boolean);
+}
+
+// 解析参数
+function parseArguments(args = {}) {
+  const paramMap = {
+    loadbalance: "loadBalance",
+    landing: "landing",
+    ipv6: "ipv6Enabled",
+    full: "fullConfig",
+    keepalive: "keepAliveEnabled",
+    fakeip: "fakeIPEnabled",
+    quic: "quicEnabled",
+    regex: "regexFilter"
+  };
+
+  const config = { ...DEFAULT_CONFIG, countryThreshold: 0 };
+
+  for (const [param, configKey] of Object.entries(paramMap)) {
+    const value = args[param];
+    if (value === null || typeof value === "undefined") {
+      config[configKey] = DEFAULT_CONFIG[configKey];
+    } else {
+      config[configKey] = parseBoolean(value);
+    }
+  }
+
+  config.countryThreshold = parseIntSafe(args.threshold, 0);
+  return config;
+}
+
+// 创建国家代理组
+function createCountryProxyGroups({ countries, landing, loadBalance, regexFilter, countryInfo }) {
+  const groups = [];
+  const groupType = loadBalance ? "load-balance" : "url-test";
+  
+  const proxyMap = regexFilter ? null : Object.fromEntries(
+    countryInfo.map(item => [item.country, item.nodes])
+  );
+
+  for (const country of countries) {
+    const countryConfig = COUNTRY_INFO[country];
+    if (!countryConfig) continue;
+
+    const group = {
+      name: `${country}节点`,
+      icon: countryConfig.icon,
+      type: groupType,
+      url: "https://cp.cloudflare.com/generate_204",
+      interval: 60,
+      tolerance: 20,
+      ...(loadBalance && { strategy: "sticky-sessions" })
+    };
+
+    if (regexFilter) {
+      Object.assign(group, {
+        "include-all": true,
+        filter: countryConfig.pattern,
+        "exclude-filter": landing ? `${LANDING_PATTERN}|${LOW_RATE_PATTERN}` : LOW_RATE_PATTERN
+      });
+    } else {
+      const proxies = proxyMap?.[country] || [];
+      Object.assign(group, { proxies });
+    }
+
+    groups.push(group);
+  }
+
+  return groups;
+}
+
+// 识别低倍率节点
+function identifyLowRateNodes(proxies) {
+  const lowRatePattern = new RegExp(LOW_RATE_PATTERN, "i");
+  return (proxies || [])
+    .filter(proxy => lowRatePattern.test(proxy.name || ""))
+    .map(proxy => proxy.name)
+    .filter(name => !!name);
+}
+
+// 分类节点
+function categorizeNodes(proxies) {
+  const landingPattern = new RegExp(LANDING_PATTERN, "i");
+  const lowRatePattern = new RegExp(LOW_RATE_PATTERN, "i");
+  
+  const landingNodes = [];
+  const nonLandingNodes = [];
+
+  for (const proxy of proxies || []) {
+    const name = proxy.name || "";
+    if (landingPattern.test(name)) {
+      landingNodes.push(name);
+    } else if (!lowRatePattern.test(name)) {
+      nonLandingNodes.push(name);
+    }
+  }
+
+  return { landingNodes, nonLandingNodes };
+}
+
+// 按国家分类节点
+function classifyByCountry(proxies) {
+  const countryMap = {};
+  const nodes = proxies || [];
+  
+  for (const node of nodes) {
+    const name = node.name || "";
+    if (!name) continue;
+    
+    // 检查是否为落地节点或低倍率节点
+    if (new RegExp(LANDING_PATTERN, "i").test(name) || new RegExp(LOW_RATE_PATTERN, "i").test(name)) {
+      continue;
+    }
+    
+    // 按国家分类
+    for (const [country, config] of Object.entries(COUNTRY_INFO)) {
+      if (new RegExp(config.pattern.replace(/^\(\?i\)/, ""), "i").test(name)) {
+        if (!countryMap[country]) {
+          countryMap[country] = [];
+        }
+        countryMap[country].push(name);
+        break;
+      }
+    }
+  }
+
+  return Object.entries(countryMap).map(([country, nodes]) => ({
+    country,
+    nodes
+  }));
+}
+
+// 过滤并排序国家
+function filterAndSortCountries(countryData, threshold) {
+  const filtered = countryData.filter(item => item.nodes.length >= threshold);
+  
+  filtered.sort((a, b) => {
+    const weightA = COUNTRY_INFO[a.country]?.weight ?? Infinity;
+    const weightB = COUNTRY_INFO[b.country]?.weight ?? Infinity;
+    return weightA - weightB;
+  });
+
+  return filtered.map(item => item.country + "节点");
+}
+
+// 移除"节点"后缀
+function removeNodeSuffix(names) {
+  const suffixRegex = new RegExp(`${"节点"}$`);
+  return names.map(name => name.replace(suffixRegex, ""));
+}
+
+// 创建主代理组
+function createMainProxyGroups({
+  landing,
+  regexFilter,
+  countries,
+  countryProxyGroups,
+  lowCostNodes,
+  landingNodes,
+  defaultProxies,
+  defaultProxiesDirect,
+  defaultSelector,
+  defaultFallback,
+  frontProxySelector
+}) {
+  const hasLowCostOrRegex = lowCostNodes.length > 0 || regexFilter;
+  const hasLanding = landing ? GROUP_NAMES.LANDING : null;
+  
+  const globalProxies = flattenAndFilter([
+    GROUP_NAMES.SELECT,
+    hasLanding,
+    countries,
+    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
+    GROUP_NAMES.MANUAL,
+    "DIRECT"
+  ]);
+
+  const groups = [
+    {
+      name: GROUP_NAMES.SELECT,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Proxy.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.MANUAL,
+      icon: `${CDN_BASE}/gh/shindgewongxj/WHATSINStash@master/icon/select.png`,
+      "include-all": true,
+      type: "select"
+    },
+    ...(landing ? [{
+      name: GROUP_NAMES.FRONT_PROXY,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Area.png`,
+      type: "select",
+      ...(regexFilter ? {
+        "include-all": true,
+        "exclude-filter": LANDING_PATTERN,
+        proxies: frontProxySelector
+      } : {
+        proxies: frontProxySelector
+      })
+    }] : []),
+    ...(landing ? [{
+      name: GROUP_NAMES.LANDING,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Airport.png`,
+      type: "select",
+      ...(regexFilter ? {
+        "include-all": true,
+        filter: LANDING_PATTERN
+      } : {
+        proxies: landingNodes
+      })
+    }] : []),
+    {
+      name: GROUP_NAMES.STATIC_RESOURCES,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Cloudflare.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.AI_SERVICE,
+      icon: `${CDN_BASE}/gh/powerfullz/override-rules@master/icons/chatgpt.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.CRYPTO,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Cryptocurrency_3.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.APPLE,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Apple.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.GOOGLE,
+      icon: `${CDN_BASE}/gh/powerfullz/override-rules@master/icons/Google.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.MICROSOFT,
+      icon: `${CDN_BASE}/gh/powerfullz/override-rules@master/icons/Microsoft_Copilot.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.BILIBILI,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/bilibili.png`,
+      type: "select",
+      proxies: countries.includes("台湾节点") && countries.includes("香港节点") 
+        ? [GROUP_NAMES.DIRECT, "台湾节点", "香港节点"] 
+        : defaultProxiesDirect
+    },
+    {
+      name: GROUP_NAMES.BAHAMUT,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Bahamut.png`,
+      type: "select",
+      proxies: countries.includes("台湾节点") 
+        ? ["台湾节点", GROUP_NAMES.SELECT, GROUP_NAMES.MANUAL, GROUP_NAMES.DIRECT] 
+        : defaultProxies
+    },
+    {
+      name: GROUP_NAMES.YOUTUBE,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/YouTube.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.NETFLIX,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Netflix.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.TIKTOK,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/TikTok.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.SPOTIFY,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Spotify.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.EHENTAI,
+      icon: `${CDN_BASE}/gh/powerfullz/override-rules@master/icons/Ehentai.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.TELEGRAM,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Telegram.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.TRUTH_SOCIAL,
+      icon: `${CDN_BASE}/gh/powerfullz/override-rules@master/icons/TruthSocial.png`,
+      type: "select",
+      proxies: countries.includes("美国节点") 
+        ? ["美国节点", GROUP_NAMES.SELECT, GROUP_NAMES.MANUAL] 
+        : defaultProxies
+    },
+    {
+      name: GROUP_NAMES.PIKPAK,
+      icon: `${CDN_BASE}/gh/powerfullz/override-rules@master/icons/PikPak.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.SSH,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Server.png`,
+      type: "select",
+      proxies: defaultProxies
+    },
+    {
+      name: GROUP_NAMES.SOGOU_INPUT,
+      icon: `${CDN_BASE}/gh/powerfullz/override-rules@master/icons/Sougou.png`,
+      type: "select",
+      proxies: [GROUP_NAMES.DIRECT, "REJECT"]
+    },
+    {
+      name: GROUP_NAMES.DIRECT,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Direct.png`,
+      type: "select",
+      proxies: ["DIRECT", GROUP_NAMES.SELECT]
+    },
+    {
+      name: GROUP_NAMES.AD_BLOCK,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/AdBlack.png`,
+      type: "select",
+      proxies: ["REJECT", "REJECT-DROP", GROUP_NAMES.DIRECT]
+    },
+    ...(hasLowCostOrRegex ? [{
+      name: GROUP_NAMES.LOW_COST,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Lab.png`,
+      type: "url-test",
+      url: "https://cp.cloudflare.com/generate_204",
+      interval: 60,
+      tolerance: 20,
+      ...(regexFilter ? {
+        "include-all": true,
+        filter: `(?:${LOW_RATE_PATTERN})`
+      } : {
+        proxies: lowCostNodes
+      })
+    }] : []),
+    {
+      name: GROUP_NAMES.AUTO,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Auto.png`,
+      type: "url-test",
+      url: "https://cp.cloudflare.com/generate_204",
+      proxies: defaultFallback,
+      interval: 60,
+      tolerance: 20
+    },
+    {
+      name: GROUP_NAMES.FALLBACK,
+      icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Available_1.png`,
+      type: "fallback",
+      url: "https://cp.cloudflare.com/generate_204",
+      proxies: defaultFallback,
+      interval: 60,
+      tolerance: 20
+    },
+    ...countryProxyGroups
+  ].filter(Boolean);
+
+  groups.push({
+    name: GROUP_NAMES.GLOBAL,
+    icon: `${CDN_BASE}/gh/Koolson/Qure@master/IconSet/Color/Global.png`,
+    "include-all": true,
+    type: "select",
+    proxies: groups.map(group => String(group.name))
+  });
+
+  return groups;
+}
+
+// 构建规则
+function buildRules({ quicEnabled }) {
+  let rules = [...RULES];
+  if (quicEnabled) {
+    rules.unshift("AND,((DST-PORT,443),(NETWORK,UDP)),REJECT");
+  }
+  return rules;
+}
+
+// 构建DNS配置
+function buildDNSConfig({ mode, ipv6Enabled, fakeIpFilter }) {
+  const config = {
+    enable: true,
+    ipv6: ipv6Enabled,
+    "prefer-h3": true,
+    "enhanced-mode": mode,
+    "default-nameserver": ["119.29.29.29", "223.5.5.5"],
+    nameserver: ["system", "223.5.5.5", "119.29.29.29", "180.184.1.1"],
+    fallback: ["quic://dns0.eu", "https://dns.cloudflare.com/dns-query", "https://dns.sb/dns-query", "tcp://208.67.222.222", "tcp://8.26.56.2"],
+    "proxy-server-nameserver": ["https://dns.alidns.com/dns-query", "tls://dot.pub"]
+  };
+
+  if (fakeIpFilter) {
+    config["fake-ip-filter"] = fakeIpFilter;
+  }
+
+  return config;
+}
+
+// 构建默认代理组
+function buildDefaultProxyGroups({ landing, lowCostNodes, countryGroupNames, nonLandingNodes, regexFilter }) {
+  const hasLowCostOrRegex = lowCostNodes.length > 0 || regexFilter;
+  const landingGroup = landing ? GROUP_NAMES.LANDING : null;
+  
+  const defaultProxies = flattenAndFilter([
+    GROUP_NAMES.SELECT,
+    landingGroup,
+    countryGroupNames,
+    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
+    GROUP_NAMES.MANUAL,
+    "DIRECT"
+  ]);
+  
+  const defaultProxiesDirect = flattenAndFilter([
+    GROUP_NAMES.DIRECT,
+    landingGroup,
+    countryGroupNames,
+    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
+    GROUP_NAMES.SELECT,
+    GROUP_NAMES.MANUAL
+  ]);
+  
+  const defaultSelector = flattenAndFilter([
+    GROUP_NAMES.AUTO,
+    GROUP_NAMES.FALLBACK,
+    landingGroup,
+    countryGroupNames,
+    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
+    GROUP_NAMES.MANUAL,
+    "DIRECT"
+  ]);
+  
+  const defaultFallback = flattenAndFilter([
+    landingGroup,
+    countryGroupNames,
+    hasLowCostOrRegex && GROUP_NAMES.LOW_COST,
+    GROUP_NAMES.MANUAL,
+    "DIRECT"
+  ]);
+  
+  const frontProxySelector = flattenAndFilter([
+    countryGroupNames,
+    "DIRECT",
+    !regexFilter && nonLandingNodes
+  ]);
+
+  return {
+    defaultProxies,
+    defaultProxiesDirect,
+    defaultSelector,
+    defaultFallback,
+    frontProxySelector
+  };
+}
+
+// 主处理函数
+function main(subscription) {
+  try {
+    const args = typeof $arguments !== 'undefined' ? $arguments : {};
+    const config = parseArguments(args);
+
+    const proxies = subscription.proxies || [];
+    
+    // 分析节点
+    const countryData = classifyByCountry(proxies);
+    const lowCostNodes = identifyLowRateNodes(proxies);
+    const { landingNodes, nonLandingNodes } = config.landing ? categorizeNodes(proxies) : { landingNodes: [], nonLandingNodes: [] };
+    
+    // 过滤和排序国家
+    const countryGroupNames = filterAndSortCountries(countryData, config.countryThreshold);
+    const countryNames = removeNodeSuffix(countryGroupNames);
+    
+    // 构建默认代理组
+    const {
+      defaultProxies,
+      defaultProxiesDirect,
+      defaultSelector,
+      defaultFallback,
+      frontProxySelector
+    } = buildDefaultProxyGroups({
+      landing: config.landing,
+      lowCostNodes,
+      countryGroupNames,
+      nonLandingNodes,
+      regexFilter: config.regexFilter
+    });
+    
+    // 创建国家代理组
+    const countryProxyGroups = createCountryProxyGroups({
+      countries: countryNames,
+      landing: config.landing,
+      loadBalance: config.loadBalance,
+      regexFilter: config.regexFilter,
+      countryInfo: countryData
+    });
+    
+    // 创建主代理组
+    const proxyGroups = createMainProxyGroups({
+      landing: config.landing,
+      regexFilter: config.regexFilter,
+      countries: countryGroupNames,
+      countryProxyGroups,
+      lowCostNodes,
+      landingNodes,
+      defaultProxies,
+      defaultProxiesDirect,
+      defaultSelector,
+      defaultFallback,
+      frontProxySelector
+    });
+    
+    // 构建规则
+    const rules = buildRules({ quicEnabled: config.quicEnabled });
+    
+    // 构建结果对象
+    const result = {
+      proxies: subscription.proxies,
+      "proxy-groups": proxyGroups,
+      "rule-providers": RULE_SETS,
+      rules,
+      sniffer: SNIFFER_CONFIG,
+      dns: config.fakeIPEnabled 
+        ? buildDNSConfig({ mode: "fake-ip", ipv6Enabled: config.ipv6Enabled, fakeIpFilter: FAKE_IP_SKIP_DOMAINS }) 
+        : buildDNSConfig({ mode: "redir-host", ipv6Enabled: config.ipv6Enabled }),
+      "geodata-mode": true,
+      "geox-url": GEO_DATA_SOURCES
+    };
+    
+    // 如果启用完整配置，添加更多选项
+    if (config.fullConfig) {
+      Object.assign(result, {
+        "mixed-port": 7890,
+        "redir-port": 7892,
+        "tproxy-port": 7893,
+        "routing-mark": 7894,
+        "allow-lan": true,
+        "bind-address": "*",
+        ipv6: config.ipv6Enabled,
+        mode: "rule",
+        "unified-delay": true,
+        "tcp-concurrent": true,
+        "find-process-mode": "off",
+        "log-level": "info",
+        "geodata-loader": "standard",
+        "external-controller": ":9999",
+        "disable-keep-alive": !config.keepAliveEnabled,
+        profile: {
+          "store-selected": true
+        }
+      });
+    }
+    
+    return result;
+  } catch (error) {
+    console.error("[powerfullz 的覆写脚本] 处理出错:", error);
+    return subscription;
+  }
+}
+
+// 导出主函数
+globalThis.main = main;
