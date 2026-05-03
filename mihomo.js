@@ -7,10 +7,20 @@ bind-address: "*"
 mode: rule
 log-level: info
 ipv6: false
-unified-delay: true
 tcp-concurrent: true
+unified-delay: true
+find-process-mode: strict
 
-# ================= DNS =================
+# ================= GEO =================
+geodata-mode: true
+geo-auto-update: true
+geo-update-interval: 24
+
+geox-url:
+  geoip: https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/Country.mmdb
+  geosite: https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat
+
+# ================= DNS（大陆联通专用优化） =================
 dns:
   enable: true
   listen: 0.0.0.0:1053
@@ -18,132 +28,191 @@ dns:
   enhanced-mode: fake-ip
   respect-rules: true
 
+  # 国内 DNS（优先）
   nameserver:
-    - 223.5.5.5
-    - 119.29.29.29
+    - 223.5.5.5      # 阿里
+    - 119.29.29.29   # 腾讯
+    - 114.114.114.114
 
+  # 国外 DNS（防污染）
   fallback:
     - https://dns.cloudflare.com/dns-query
     - https://dns.google/dns-query
+    - tls://1.1.1.1:853
 
   fallback-filter:
     geoip: true
     geoip-code: CN
+    ipcidr:
+      - 240.0.0.0/4
+
+  # 代理节点解析（避免污染）
+  proxy-server-nameserver:
+    - https://dns.cloudflare.com/dns-query
+
+  fake-ip-filter:
+    - "geosite:cn"
+    - "geosite:private"
+    - "+.qq.com"
+    - "+.bilibili.com"
+    - "+.mi.com"
+
+# ================= 嗅探 =================
+sniffer:
+  enable: true
+  parse-pure-ip: true
+  force-dns-mapping: true
+  sniff:
+    TLS:
+      ports: [443, 8443]
+    HTTP:
+      ports: [80, 8080]
 
 # ================= 订阅 =================
 proxy-providers:
   Subscribe:
     type: http
-    url: "你的订阅&flag=meta"
+    url: "你的机场订阅"
     interval: 3600
-    path: ./proxies.yaml
+    path: ./profiles/proxies.yaml
+    health-check:
+      enable: true
+      url: http://www.gstatic.com/generate_204
+      interval: 300
 
 # ================= 策略组 =================
 proxy-groups:
 
-# 🎯 核心
-- name: 选择代理
+# 🎯 总控
+- name: 🚀 总代理
   type: select
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Global.png
   proxies:
-    - 自动选择
-    - 故障转移
-    - 手动选择
+    - ⚡ 自动优选
+    - 🔁 故障转移
+    - 🎯 AI专用
+    - 🎬 流媒体
+    - 🧭 手动
     - DIRECT
 
-- name: 手动选择
+- name: 🧭 手动
   type: select
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Select.png
-  use:
-    - Subscribe
+  use: [Subscribe]
 
-- name: 自动选择
+# ⚡ 延迟优选（联通重点）
+- name: ⚡ 自动优选
   type: url-test
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Auto.png
   url: http://www.gstatic.com/generate_204
-  interval: 300
-  use:
-    - Subscribe
+  interval: 120
+  tolerance: 20
+  use: [Subscribe]
 
-- name: 故障转移
+# 🔁 稳定
+- name: 🔁 故障转移
   type: fallback
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Fallback.png
   url: http://www.gstatic.com/generate_204
-  interval: 300
-  use:
-    - Subscribe
-
-# 🌍 分地区
-- name: 日本节点
-  type: url-test
-  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Japan.png
+  interval: 120
   use: [Subscribe]
-  filter: "日本|JP|东京|大阪"
 
-- name: 香港节点
+# 🐢 低倍率隔离
+- name: 🐢 低倍率
+  type: url-test
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Low.png
+  url: http://www.gstatic.com/generate_204
+  interval: 300
+  use: [Subscribe]
+  filter: "(?i)0\\.[0-5]|低倍率|省流|体验"
+
+# 🌍 地区（联通建议）
+- name: 🇭🇰 香港
   type: url-test
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Hong_Kong.png
   use: [Subscribe]
-  filter: "香港|HK"
+  filter: "HK|香港"
 
-- name: 美国节点
+- name: 🇯🇵 日本
   type: url-test
-  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/United_States.png
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Japan.png
   use: [Subscribe]
-  filter: "美国|US"
+  filter: "JP|日本"
 
-- name: 新加坡节点
+- name: 🇸🇬 新加坡
   type: url-test
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Singapore.png
   use: [Subscribe]
-  filter: "新加坡|SG"
+  filter: "SG|新加坡"
 
-# 🎬 流媒体
-- name: Netflix
-  type: select
-  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Netflix.png
-  proxies:
-    - 自动选择
-    - 美国节点
-    - 日本节点
+- name: 🇺🇸 美国
+  type: url-test
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/United_States.png
+  use: [Subscribe]
+  filter: "US|美国"
 
-- name: Youtube
-  type: select
-  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/YouTube.png
-  proxies:
-    - 自动选择
-    - 日本节点
-
-- name: TikTok
-  type: select
-  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/TikTok.png
-  proxies:
-    - 美国节点
-    - 日本节点
-
-# 🧠 AI
-- name: AI服务
+# 🤖 AI（关键）
+- name: 🎯 AI专用
   type: select
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/AI.png
   proxies:
-    - 美国节点
-    - 日本节点
+    - 🇺🇸 美国
+    - 🇯🇵 日本
+    - ⚡ 自动优选
 
-# 📱 常用
-- name: Telegram
+# 🎬 流媒体
+- name: 🎬 流媒体
+  type: select
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Netflix.png
+  proxies:
+    - 🇭🇰 香港
+    - 🇯🇵 日本
+    - 🇺🇸 美国
+    - ⚡ 自动优选
+
+# 📱 服务
+- name: 🤖 AI服务
+  type: select
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/AI.png
+  proxies:
+    - 🎯 AI专用
+
+- name: 📺 YouTube
+  type: select
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/YouTube.png
+  proxies:
+    - 🇭🇰 香港
+    - 🇯🇵 日本
+
+- name: 🎵 TikTok
+  type: select
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/TikTok.png
+  proxies:
+    - 🇺🇸 美国
+
+- name: ✈️ Telegram
   type: select
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Telegram.png
   proxies:
-    - 自动选择
+    - ⚡ 自动优选
 
-- name: Twitter
+# 🍎 微软
+- name: 🍎 苹果
   type: select
-  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Twitter.png
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Apple.png
   proxies:
-    - 自动选择
+    - DIRECT
+    - ⚡ 自动优选
+
+- name: 🪟 微软
+  type: select
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Microsoft.png
+  proxies:
+    - DIRECT
+    - ⚡ 自动优选
 
 # 🚫 广告
-- name: 广告拦截
+- name: 🛑 广告
   type: select
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Adblock.png
   proxies:
@@ -157,19 +226,24 @@ rules:
 - AND,((DST-PORT,443),(NETWORK,UDP)),REJECT
 
 # 广告
-- DOMAIN-SUFFIX,ad.com,广告拦截
-
-# 流媒体
-- GEOSITE,NETFLIX,Netflix
-- GEOSITE,YOUTUBE,Youtube
+- GEOSITE,CATEGORY-ADS-ALL,🛑 广告
 
 # AI
-- GEOSITE,CATEGORY-AI-!CN,AI服务
+- GEOSITE,CATEGORY-AI-!CN,🤖 AI服务
+
+# 流媒体
+- GEOSITE,NETFLIX,🎬 流媒体
+- GEOSITE,YOUTUBE,📺 YouTube
 
 # 社交
-- GEOSITE,TELEGRAM,Telegram
-- GEOSITE,TWITTER,Twitter
+- GEOSITE,TELEGRAM,✈️ Telegram
 
-# 国内外
+# 系统
+- GEOSITE,APPLE,🍎 苹果
+- GEOSITE,MICROSOFT,🪟 微软
+
+# 国内
 - GEOIP,CN,DIRECT
-- MATCH,选择代理
+
+# 兜底
+- MATCH,🚀 总代理
