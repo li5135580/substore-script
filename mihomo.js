@@ -16,7 +16,9 @@ function main(config) {
   };
 
   const PROXY = pick(["选择代理", "🚀 节点选择", "🚀 总代理"], "DIRECT");
-  const DIRECT = pick(["直连", "DIRECT"], "DIRECT");
+
+// ✅ 必须用 DIRECT
+const DIRECT = "DIRECT";
 
   // ===== 清理旧规则（防重复）=====
   config.rules = config.rules.filter(
